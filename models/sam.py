@@ -10,8 +10,12 @@ from models import register
 from .mmseg.models.sam import ImageEncoderViT, MaskDecoder, TwoWayTransformer
 
 logger = logging.getLogger(__name__)
-from .iou_loss import IOU
+# from .iou_loss import IOU,BoundaryLoss
 from typing import Any, Optional, Tuple
+import cv2
+import torchvision
+#han_end
+
 
 
 def init_weights(layer):
@@ -25,6 +29,39 @@ def init_weights(layer):
         # print(layer)
         nn.init.normal_(layer.weight, mean=1.0, std=0.02)
         nn.init.constant_(layer.bias, 0.0)
+
+
+class BinaryDiceLoss(nn.Module):
+    def __init__(self, smooth=1, p=2, reduction='mean'):
+        super(BinaryDiceLoss, self).__init__()
+        self.smooth = smooth
+        self.p = p
+        self.reduction = reduction
+
+    def forward(self, predict, target, valid_mask):
+        assert predict.shape[0] == target.shape[0], "predict & target batch size don't match"
+        predict = predict.contiguous().view(predict.shape[0], -1)
+        device = predict.device
+        target = target.contiguous().view(target.shape[0], -1)
+        target_gpu = target.clone().cuda(device=device)
+        valid_mask_gpu = valid_mask.clone().cuda(device=device)
+        valid_mask_gpu = valid_mask_gpu.contiguous().view(valid_mask.shape[0], -1)
+
+        num = torch.sum(torch.mul(predict, target_gpu) * valid_mask_gpu, dim=1) * 2 + self.smooth
+        den = torch.sum((predict.pow(self.p) + target_gpu.pow(self.p)) * valid_mask_gpu, dim=1) + self.smooth
+
+        loss = 1 - num / den
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        elif self.reduction == 'none':
+            return loss
+        else:
+            raise Exception('Unexpected reduction {}'.format(self.reduction))
+
+
 
 class BBCEWithLogitLoss(nn.Module):
     '''
@@ -124,32 +161,18 @@ class SAM(nn.Module):
             ),
             transformer_dim=self.prompt_embed_dim,
             iou_head_depth=3,
-            iou_head_hidden_dim=256,
-        )
+            iou_head_hidden_dim=256,)
 
-        if 'evp' in encoder_mode['name']:
-            for k, p in self.encoder.named_parameters():
+        if 'evp' in encoder_mode['name']:   
+            for k, p in self.image_encoder.named_parameters():
+                # import pdb;pdb.set_trace()
                 if "prompt" not in k and "mask_decoder" not in k and "prompt_encoder" not in k:
                     p.requires_grad = False
-
-
-
-        self.loss_mode = loss
-        if self.loss_mode == 'bce':
-            self.criterionBCE = torch.nn.BCEWithLogitsLoss()
-
-        elif self.loss_mode == 'bbce':
-            self.criterionBCE = BBCEWithLogitLoss()
-
-        elif self.loss_mode == 'iou':
-            self.criterionBCE = torch.nn.BCEWithLogitsLoss()
-            self.criterionIOU = IOU()
-
+        # import pdb;pdb.set_trace()
         self.pe_layer = PositionEmbeddingRandom(encoder_mode['prompt_embed_dim'] // 2)
         self.inp_size = inp_size
         self.image_embedding_size = inp_size // encoder_mode['patch_size']
         self.no_mask_embed = nn.Embedding(1, encoder_mode['prompt_embed_dim'])
-
     def set_input(self, input, gt_mask):
         self.input = input.to(self.device)
         self.gt_mask = gt_mask.to(self.device)
@@ -169,27 +192,6 @@ class SAM(nn.Module):
     def forward(self):
         bs = 1
 
-        # Embed prompts
-        sparse_embeddings = torch.empty((bs, 0, self.prompt_embed_dim), device=self.input.device)
-        dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
-            bs, -1, self.image_embedding_size, self.image_embedding_size
-        )
-
-        self.features = self.image_encoder(self.input)
-
-        # Predict masks
-        low_res_masks, iou_predictions = self.mask_decoder(
-            image_embeddings=self.features,
-            image_pe=self.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings,
-            multimask_output=False,
-        )
-
-        # Upscale the masks to the original image resolution
-        masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
-        self.pred_mask = masks
-
     def infer(self, input):
         bs = 1
 
@@ -200,8 +202,6 @@ class SAM(nn.Module):
         )
 
         self.features = self.image_encoder(input)
-
-        # Predict masks
         low_res_masks, iou_predictions = self.mask_decoder(
             image_embeddings=self.features,
             image_pe=self.get_dense_pe(),
@@ -213,28 +213,13 @@ class SAM(nn.Module):
         # Upscale the masks to the original image resolution
         masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
         return masks
-
+    
     def postprocess_masks(
         self,
         masks: torch.Tensor,
         input_size: Tuple[int, ...],
         original_size: Tuple[int, ...],
     ) -> torch.Tensor:
-        """
-        Remove padding and upscale masks to the original image size.
-
-        Arguments:
-          masks (torch.Tensor): Batched masks from the mask_decoder,
-            in BxCxHxW format.
-          input_size (tuple(int, int)): The size of the image input to the
-            model, in (H, W) format. Used to remove padding.
-          original_size (tuple(int, int)): The original size of the image
-            before resizing for input to the model, in (H, W) format.
-
-        Returns:
-          (torch.Tensor): Batched masks in BxCxHxW format, where (H, W)
-            is given by original_size.
-        """
         masks = F.interpolate(
             masks,
             (self.image_encoder.img_size, self.image_encoder.img_size),
@@ -247,27 +232,11 @@ class SAM(nn.Module):
 
     def backward_G(self):
         """Calculate GAN and L1 loss for the generator"""
-        self.loss_G = self.criterionBCE(self.pred_mask, self.gt_mask)
-        if self.loss_mode == 'iou':
-            self.loss_G += _iou_loss(self.pred_mask, self.gt_mask)
-
-        self.loss_G.backward()
+        
+        return 0
 
     def optimize_parameters(self):
-        self.forward()
-        self.optimizer.zero_grad()  # set G's gradients to zero
-        self.backward_G()  # calculate graidents for G
-        self.optimizer.step()  # udpate G's weights
+        1
 
     def set_requires_grad(self, nets, requires_grad=False):
-        """Set requies_grad=Fasle for all the networks to avoid unnecessary computations
-        Parameters:
-            nets (network list)   -- a list of networks
-            requires_grad (bool)  -- whether the networks require gradients or not
-        """
-        if not isinstance(nets, list):
-            nets = [nets]
-        for net in nets:
-            if net is not None:
-                for param in net.parameters():
-                    param.requires_grad = requires_grad
+        1

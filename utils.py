@@ -8,6 +8,12 @@ from torch.optim import SGD, Adam, AdamW
 from tensorboardX import SummaryWriter
 
 import sod_metric
+
+import cv2
+from skimage.segmentation import find_boundaries
+from sklearn.metrics import precision_score, recall_score
+
+
 class Averager():
 
     def __init__(self):
@@ -21,6 +27,18 @@ class Averager():
     def item(self):
         return self.v
 
+class Averager_train():
+    
+    def __init__(self):
+        self.n = 0.0
+        self.v = 0.0
+
+    def add(self, v, n=1.0):
+        self.v = self.v + v 
+        self.n += n
+
+    def item(self):
+        return self.v
 
 class Timer():
 
@@ -150,8 +168,6 @@ def calc_cod(y_pred, y_true):
 
 
 from sklearn.metrics import precision_recall_curve
-
-
 def calc_f1(y_pred,y_true):
     batchsize = y_true.shape[0]
     with torch.no_grad():
@@ -161,7 +177,7 @@ def calc_f1(y_pred,y_true):
         y_pred = y_pred.cpu().numpy()
         for i in range(batchsize):
             true = y_true[i].flatten()
-            true = true.astype(np.int)
+            true = true.astype(int)
             pred = y_pred[i].flatten()
 
             precision, recall, thresholds = precision_recall_curve(true, pred)
@@ -170,13 +186,14 @@ def calc_f1(y_pred,y_true):
             auc += roc_auc_score(true, pred)
             # auc += roc_auc_score(np.array(true>0).astype(np.int), pred)
             f1 += max([(2 * p * r) / (p + r+1e-10) for p, r in zip(precision, recall)])
-
+            
     return f1/batchsize, auc/batchsize, np.array(0), np.array(0)
 
 def calc_fmeasure(y_pred,y_true):
     batchsize = y_true.shape[0]
 
     mae, preds, gts = [], [], []
+    # import pdb;pdb.set_trace()
     with torch.no_grad():
         for i in range(batchsize):
             gt_float, pred_float = \
@@ -200,11 +217,64 @@ def calc_fmeasure(y_pred,y_true):
 
         RECALL = recall_score(gts, preds)
         PERC = precision_score(gts, preds)
-
-        fmeasure = (1 + 0.3) * PERC * RECALL / (0.3 * PERC + RECALL)
+        if (PERC==0 and RECALL==0):
+            fmeasure = torch.tensor(0.0)
+        else:
+            fmeasure = (1 + 0.3) * PERC * RECALL / (0.3 * PERC + RECALL)
         MAE = np.mean(mae)
-
+    # import pdb;pdb.set_trace()
     return fmeasure, MAE, np.array(0), np.array(0)
+
+# def calc_fmeasure(y_pred,y_true):
+#     batchsize = y_true.shape[0]
+
+#     mae, preds, gts = [], [], []
+#     with torch.no_grad():
+#         for i in range(batchsize):
+#             gt_float, pred_float = \
+#                 y_true[i, 0].cpu().data.numpy(), y_pred[i, 0].cpu().data.numpy()
+
+#             # # MAE
+#             mae.append(np.sum(cv2.absdiff(gt_float.astype(float), pred_float.astype(float))) / (
+#                         pred_float.shape[1] * pred_float.shape[0]))
+#             # mae.append(np.mean(np.abs(pred_float - gt_float)))
+#             #
+#             pred = np.uint8(pred_float * 255)
+#             gt = np.uint8(gt_float * 255)
+
+#             pred_float_ = np.where(pred > min(1.5 * np.mean(pred), 255), np.ones_like(pred_float),
+#                                    np.zeros_like(pred_float))
+#             gt_float_ = np.where(gt > min(1.5 * np.mean(gt), 255), np.ones_like(pred_float),
+#                                  np.zeros_like(pred_float))
+
+#             preds.extend(pred_float_.ravel())
+#             gts.extend(gt_float_.ravel())
+
+#         RECALL = recall_score(gts, preds)
+#         PERC = precision_score(gts, preds)
+
+#         fmeasure = (1 + 0.3) * PERC * RECALL / (0.3 * PERC + RECALL)
+#         MAE = np.mean(mae)
+        
+        
+#         y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
+#         iou_sum=0
+#         assert y_pred.shape == y_true.shape
+#         pos_err, neg_err, ber = 0, 0, 0
+#         y_true = y_true.cpu().numpy()
+#         y_pred = y_pred.cpu().numpy()
+#         for i in range(batchsize):
+#             true = y_true[i].flatten()
+#             pred = y_pred[i].flatten()
+#             pred = pred * 255,
+#             gt = true * 255
+#             # import pdb;pdb.set_trace()
+#             gt = (gt > 125)
+#             pred = (pred[0] > 125)
+#             IOU = cal_iou(gt,pred)
+#             iou_sum = iou_sum + IOU    
+#         iou_sum = iou_sum /batchsize
+#     return fmeasure, MAE, iou_sum, np.array(0)
 
 from sklearn.metrics import roc_auc_score,recall_score,precision_score
 import cv2
@@ -219,13 +289,247 @@ def calc_ber(y_pred, y_true):
         for i in range(batchsize):
             true = y_true[i].flatten()
             pred = y_pred[i].flatten()
-
-            TP, TN, FP, FN, BER, ACC = get_binary_classification_metrics(pred * 255,
-                                                                         true * 255, 125)
+            # import pdb;pdb.set_trace()
+            TP, TN, FP, FN, BER, ACC,ACC = get_binary_classification_metrics(pred * 255,true * 255, 125)
             pos_err += (1 - TP / (TP + FN)) * 100
             neg_err += (1 - TN / (TN + FP)) * 100
 
     return pos_err / batchsize, neg_err / batchsize, (pos_err + neg_err) / 2 / batchsize, np.array(0)
+
+
+def calc_iou(y_pred,y_true):
+    # import pdb;pdb.set_trace()
+    #y_pred, y_true = y_pred.squeeze(-1), y_true.squeeze(-1)
+    y_pred, y_true = y_pred.squeeze(0), y_true.squeeze(0)
+    iou_sum=0
+    with torch.no_grad():
+        assert y_pred.shape == y_true.shape
+        # pos_err, neg_err, ber = 0, 0, 0
+        y_true = y_true
+        y_pred = y_pred#.cpu()
+        # for i in range(batchsize):
+        #     # import pdb;pdb.set_trace()
+        #     true = y_true[i]#.flatten()
+        #     pred = y_pred[i]#.flatten()
+        pred = y_pred * 255
+        gt = y_true * 255
+        gt = (gt > 125)
+        pred = (pred> 125)
+        iou_sum = get_iou_matrix_input_tensor_batch(pred,gt)#.mean()
+        # import pdb;pdb.set_trace()
+
+        #import pdb;pdb.set_trace()
+            # IOU = cal_iou(gt,pred)
+            #iou_sum = iou_sum + IOU    
+        # iou_sum = iou_sum /batchsize
+        iou_sum= iou_sum.cpu().numpy()
+        # import pdb;pdb.set_trace()
+        # iiii=1
+    return iou_sum, np.array(0), np.array(0), np.array(0)
+    # import pdb;pdb.set_trace()
+    # batchsize = y_true.shape[0]
+    # y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
+    # iou_sum=0
+    # with torch.no_grad():
+    #     assert y_pred.shape == y_true.shape
+    #     pos_err, neg_err, ber = 0, 0, 0
+    #     y_true = y_true.cpu().numpy()
+    #     y_pred = y_pred.cpu().numpy()
+    #     import pdb;pdb.set_trace()
+    #     for i in range(batchsize):
+    #         true = y_true[i].flatten()
+    #         pred = y_pred[i].flatten()
+    #         pred = pred * 255
+    #         gt = true * 255
+    #         # import pdb;pdb.set_trace()
+    #         gt = (gt > 125)
+    #         pred = (pred> 125)
+    #         IOU = cal_iou(gt,pred)
+    #         iou_sum = iou_sum + IOU    
+    #     iou_sum = iou_sum /batchsize
+    # return iou_sum, np.array(0), np.array(0), np.array(0)
+
+
+# def calc_iou(y_pred,y_true):
+#     # import pdb;pdb.set_trace()
+#     #y_pred, y_true = y_pred.squeeze(-1), y_true.squeeze(-1)
+#     y_pred, y_true = y_pred.squeeze(0), y_true.squeeze(0)
+#     iou_sum=0
+#     with torch.no_grad():
+#         assert y_pred.shape == y_true.shape
+#         # pos_err, neg_err, ber = 0, 0, 0
+#         y_true = y_true
+#         y_pred = y_pred#.cpu()
+#         pred = y_pred * 255
+#         gt = y_true * 255
+#         gt = (gt > 125)
+#         pred = (pred> 125)
+#         iou_sum = get_iou_matrix_input_tensor_batch(pred,gt)#.mean()
+#         iou_sum = iou_sum.cpu().numpy()
+#         # import pdb;pdb.set_trace()
+#         edge_sharpness = calc_edge_sharpness(y_pred)    
+#         # import pdb;pdb.set_trace()
+#     return iou_sum, edge_sharpness, np.array(0), np.array(0)
+def calc_edge_sharpness(binary_image):
+    """
+    计算二值图像的边缘锐度
+    :param binary_image: 二值图像（PyTorch 张量或 NumPy 数组）
+    :return: 边缘锐度值
+    """
+    # 如果输入是 PyTorch 张量，则转换为 NumPy 数组
+    if isinstance(binary_image, torch.Tensor):
+        binary_image = binary_image.cpu().numpy()
+
+    # 如果是 3D 图像（H, W, C），则取单通道
+    if len(binary_image.shape) == 3:
+        binary_image = binary_image.squeeze()  # 去掉多余维度
+
+    # 确保图像是二维的
+    if len(binary_image.shape) > 2:
+        raise ValueError(f"Input image must be 2D, but got shape {binary_image.shape}")
+
+    # 确保图像是 uint8 类型（OpenCV 要求）
+    binary_image = binary_image.astype(np.uint8)
+
+    # 使用 Sobel 算子计算梯度
+    sobel_x = cv2.Sobel(binary_image, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(binary_image, cv2.CV_64F, 0, 1, ksize=3)
+
+    # 计算梯度幅值
+    gradient_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+
+    # 计算锐度指标（如平均值）
+    sharpness = np.mean(gradient_magnitude)
+    return sharpness
+
+def calc_iou_train(y_pred,y_true):
+    # import pdb;pdb.set_trace()
+    #y_pred, y_true = y_pred.squeeze(-1), y_true.squeeze(-1)
+    y_pred, y_true = y_pred.squeeze(0), y_true.squeeze(0)
+    iou_sum=0
+    with torch.no_grad():
+        assert y_pred.shape == y_true.shape
+        # pos_err, neg_err, ber = 0, 0, 0
+        y_true = y_true.cpu()
+        y_pred = y_pred.cpu()
+        # for i in range(batchsize):
+        #     # import pdb;pdb.set_trace()
+        #     true = y_true[i]#.flatten()
+        #     pred = y_pred[i]#.flatten()
+        pred = y_pred * 255
+        gt = y_true * 255
+        gt = (gt > 125)
+        pred = (pred> 125)
+        # import pdb;pdb.set_trace()
+
+        iou_sum = get_iou_matrix_input_tensor_batch(pred,gt).mean()
+        # print('xxxxxxxxxxx',iou_sum)
+        # print('xxxxxxxxxxx',pred.shape)
+        # import pdb;pdb.set_trace()
+            # IOU = cal_iou(gt,pred)
+            #iou_sum = iou_sum + IOU    
+        # iou_sum = iou_sum /batchsize
+        iou_sum = iou_sum.cpu().numpy()
+        # import pdb;pdb.set_trace()
+        # iiii=1
+        
+    return iou_sum, np.array(0), np.array(0), np.array(0)
+
+def calc_glass(y_pred, y_true):
+    batchsize = y_true.shape[0]
+    with torch.no_grad():
+        assert y_pred.shape == y_true.shape
+        y_pred_source = y_pred.clone().detach()
+        y_true_source= y_true.clone().detach()
+        y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
+        pos_err, neg_err, ber = 0, 0, 0
+        y_true = y_true.cpu().numpy()
+        y_pred = y_pred.cpu().numpy()
+        for i in range(batchsize):
+            true = y_true[i].flatten()
+            pred = y_pred[i].flatten()
+
+            TP, TN, FP, FN, BER, ACC,iou = get_binary_classification_metrics(pred * 255,
+                                                                         true * 255, 125)
+            pos_err += (1 - TP / (TP + FN)) * 100
+            neg_err += (1 - TN / (TN + FP)) * 100
+    ber = (pos_err + neg_err) / 2 / batchsize
+    #
+    mae, preds, gts = [], [], []
+    with torch.no_grad():
+        for i in range(batchsize):
+            gt_float, pred_float = \
+                y_true_source[i, 0].cpu().data.numpy(), y_pred_source[i, 0].cpu().data.numpy()
+
+            # # MAE
+            mae.append(np.sum(cv2.absdiff(gt_float.astype(float), pred_float.astype(float))) / (
+                        pred_float.shape[1] * pred_float.shape[0]))
+            # mae.append(np.mean(np.abs(pred_float - gt_float)))
+            #
+            pred = np.uint8(pred_float * 255)
+            gt = np.uint8(gt_float * 255)
+
+            pred_float_ = np.where(pred > min(1.5 * np.mean(pred), 255), np.ones_like(pred_float),
+                                   np.zeros_like(pred_float))
+            gt_float_ = np.where(gt > min(1.5 * np.mean(gt), 255), np.ones_like(pred_float),
+                                 np.zeros_like(pred_float))
+
+            preds.extend(pred_float_.ravel())
+            gts.extend(gt_float_.ravel())
+
+        RECALL = recall_score(gts, preds)
+        PERC = precision_score(gts, preds)
+        # import pdb;pdb.set_trace()
+        if (RECALL == 0 and PERC == 0):
+            RECALL = 1e-6
+        fmeasure = (1 + 0.3) * PERC * RECALL / (0.3 * PERC + RECALL)
+        MAE = np.mean(mae)
+    return iou / batchsize, MAE, ber, fmeasure
+
+
+def calc_boundary_f1(y_pred, y_true, dilation_ratio=0.02):
+    batchsize = y_true.shape[0]
+    bf_scores = []
+
+    for i in range(batchsize):
+        gt = y_true[i, 0].cpu().data.numpy()
+        pred = y_pred[i, 0].cpu().data.numpy()
+
+        # 二值化
+        gt_bin = (gt > 0.5).astype(np.uint8)
+        pred_bin = (pred > 0.5).astype(np.uint8)
+
+        # 提取边界
+        gt_boundary = find_boundaries(gt_bin, mode='thick').astype(np.uint8)
+        pred_boundary = find_boundaries(pred_bin, mode='thick').astype(np.uint8)
+
+        # 边界膨胀（容忍一定误差）
+        bound_pix = int(np.round(dilation_ratio * np.sqrt(gt.shape[0]**2 + gt.shape[1]**2)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (bound_pix*2+1, bound_pix*2+1))
+        gt_dil = cv2.dilate(gt_boundary, kernel, iterations=1)
+        pred_dil = cv2.dilate(pred_boundary, kernel, iterations=1)
+
+        # 计算 Precision 和 Recall
+        pred_match = pred_boundary * gt_dil
+        gt_match = gt_boundary * pred_dil
+
+        n_pred = np.sum(pred_boundary)
+        n_gt = np.sum(gt_boundary)
+
+        if n_pred == 0 and n_gt == 0:
+            bf = 1.0  # 两者都没有边界，视为完美
+        elif n_pred == 0 or n_gt == 0:
+            bf = 0.0
+        else:
+            precision = np.sum(pred_match) / (n_pred + 1e-7)
+            recall = np.sum(gt_match) / (n_gt + 1e-7)
+            if precision + recall == 0:
+                bf = 0.0
+            else:
+                bf = 2 * precision * recall / (precision + recall)
+        bf_scores.append(bf)
+
+    return np.mean(bf_scores), np.array(0), np.array(0), np.array(0)
 
 def get_binary_classification_metrics(pred, gt, threshold=None):
     if threshold is not None:
@@ -237,7 +541,32 @@ def get_binary_classification_metrics(pred, gt, threshold=None):
     FP = np.logical_and(np.logical_not(gt), pred).sum()
     BER = cal_ber(TN, TP, FN, FP)
     ACC = cal_acc(TN, TP, FN, FP)
-    return TP, TN, FP, FN, BER, ACC
+    IOU = cal_iou(gt,pred)
+    # import pdb;pdb.set_trace()
+    return TP, TN, FP, FN, BER, ACC,IOU
+
+# def cal_iou(masks_gt, masks_pred):
+#     gt=masks_gt
+#     dt=masks_pred
+#     # import pdb;pdb.set_trace()
+#     intersection = torch.sum((gt * dt) > 0)
+#     union = torch.sum((gt + dt) > 0) 
+#     return intersection / union
+def cal_iou(masks_gt, masks_pred):
+    intersection = np.logical_and(masks_gt, masks_pred)
+    union = np.logical_or(masks_gt, masks_pred)
+    iou = np.sum(intersection) / np.sum(union)
+    return iou
+def get_iou_matrix_input_tensor_batch(masks_gt, masks_pred):
+    gt=masks_gt
+    dt=masks_pred
+    # import pdb;pdb.set_trace()
+    intersection = torch.sum((gt * dt) > 0, dim=(1,2))
+    union = torch.sum((gt + dt) > 0, dim=(1,2)) 
+    # import pdb;pdb.set_trace()
+    return intersection / union
+def cal_ber(tn, tp, fn, fp):
+    return  0.5*(fp/(tn+fp) + fn/(fn+tp))
 
 def cal_ber(tn, tp, fn, fp):
     return  0.5*(fp/(tn+fp) + fn/(fn+tp))
