@@ -42,7 +42,7 @@ test_dataset:
   batch_size: 1
 # /home/gpuadmin/hds/SAM-Adapter-PyTorch/pretrained/mobile_sam.pt
 #/home/gpuadmin/hds/SAM-Adapter-PyTorch/pretrained/mobile_sam21M.pt
-eval_type: fmeasure
+eval_type: iou
 sam_checkpoint: /home/gpuadmin/hds/SAM-Adapter-PyTorch/pretrained/mobile_sam.pt
 data_norm:
   inp:
