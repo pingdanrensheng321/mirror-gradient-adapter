@@ -1,4 +1,4 @@
-## SAM-adapter: Adapting SAM in Underperformed Scenes
+## Adapting Lightweight SAM with Gradient Map for Mirror
 
 ## Environment
 pip install -r requirements.txt
