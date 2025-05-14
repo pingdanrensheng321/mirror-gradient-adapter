@@ -11,7 +11,7 @@ python evaluate.py -gt -pred
 ```
 
 ## Checkpoints
-https://drive.google.com/
+https://drive.google.com/drive/u/0/folders/15cOLOxxQnhK6OyhArhne6ZxNXz-SHmhV
 
 ## Dataset
 
